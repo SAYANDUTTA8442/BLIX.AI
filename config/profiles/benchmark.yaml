@@ -1,0 +1,16 @@
+# Blix benchmark profile — maximum fidelity for research runs
+# Usage: BLIX_PROFILE=benchmark python3 run_benchmarks.py
+adma:
+  learner:
+    cache_max_size: 5000
+    decay_persist_every: 100
+  reward_log:
+    max_rows_per_policy: 10000
+    stats_last_n: 5000
+hgshm:
+  retrieval:
+    default_top_k: 20
+features:
+  hybrid_retrieval: true
+  adaptive_policy: true
+  graph_reasoning: true

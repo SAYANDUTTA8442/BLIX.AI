@@ -1,0 +1,13 @@
+# Latency-optimized profile — smaller caches, tighter timeouts
+adma:
+  learner:
+    cache_max_size: 200
+    decay_persist_every: 20
+  prompt_compiler:
+    token_budget: 800
+    max_memory_nodes: 3
+hgshm:
+  retrieval:
+    default_top_k: 5
+    graph_max_depth: 1
+    graph_max_nodes: 20

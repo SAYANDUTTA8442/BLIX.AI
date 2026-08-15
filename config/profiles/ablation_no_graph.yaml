@@ -1,0 +1,10 @@
+# Ablation: disable graph reasoning to measure its contribution
+# Usage: BLIX_PROFILE=benchmark BLIX_FEATURE_GRAPH_REASONING=false python3 ...
+features:
+  graph_reasoning: false
+  hybrid_retrieval: true
+  adaptive_policy: true
+hgshm:
+  retrieval:
+    graph_max_depth: 0
+    graph_max_nodes: 0

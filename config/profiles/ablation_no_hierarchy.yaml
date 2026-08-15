@@ -1,0 +1,5 @@
+# Ablation: disable hierarchy compression
+features:
+  hierarchy: false
+  hybrid_retrieval: true
+  adaptive_policy: true
