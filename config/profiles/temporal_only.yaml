@@ -1,0 +1,31 @@
+# Ablation: Temporal decay only (no hierarchy compression, no graph, no ADMA)
+#
+# Tests whether temporal weighting alone (recency bias + validity windows)
+# provides value over flat RAG, without any structural memory organisation.
+# The memory is flat but time-ordered — recent facts are preferred.
+#
+# Expected rank: Low-Medium — temporal decay alone helps on StreamingQA
+# (state tracking) but provides less benefit on static QA datasets.
+#
+# Usage: --profiles temporal_only
+
+features:
+  hybrid_retrieval: true
+  adaptive_policy: false
+  graph_reasoning: false
+  temporal: true
+  hierarchy: false           # flat memory — no compression tiers
+
+# HybridWeights — maximise recency signal; zero hierarchy and graph.
+retrieval_weights:
+  semantic: 0.35
+  vector: 0.25
+  graph_distance: 0.00
+  importance: 0.15
+  confidence: 0.10
+  recency: 0.15             # boosted: temporal decay is the key feature
+  hierarchy: 0.00           # no hierarchy
+  context_similarity: 0.00
+  attention: 0.00
+  belief_confidence: 0.00
+  planning_relevance: 0.00

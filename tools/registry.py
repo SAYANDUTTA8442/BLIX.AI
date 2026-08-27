@@ -314,12 +314,16 @@ class PythonTool(Tool):
     """
 
     _SAFE_BUILTINS = {
-        "abs", "all", "any", "bin", "bool", "chr", "dict", "dir",
+        # C06: removed getattr, setattr, dir, hasattr — these permit object-
+        # graph traversal and make the restricted-builtins sandbox escapable.
+        # Code running under exec() in the same process must not be able to
+        # walk __class__.__base__.__subclasses__() chains.
+        "abs", "all", "any", "bin", "bool", "chr", "dict",
         "divmod", "enumerate", "filter", "float", "format", "frozenset",
-        "getattr", "hasattr", "hash", "hex", "int", "isinstance", "issubclass",
+        "hash", "hex", "int", "isinstance", "issubclass",
         "iter", "len", "list", "map", "max", "min", "next", "oct", "ord",
         "pow", "print", "range", "repr", "reversed", "round", "set",
-        "setattr", "slice", "sorted", "str", "sum", "tuple", "type", "zip",
+        "slice", "sorted", "str", "sum", "tuple", "type", "zip",
     }
     _TIMEOUT_SECS = 5.0
 

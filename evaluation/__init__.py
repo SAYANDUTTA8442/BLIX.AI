@@ -41,6 +41,42 @@ from utils.logger import get_logger
 
 log = get_logger(__name__)
 
+# ── B04: optional semantic similarity backend ────────────────────────
+# sentence_transformers is an optional dependency. When absent, fact_accuracy
+# falls back to substring containment — identical to the pre-B04 behaviour.
+
+_EMBEDDING_MODEL = None
+
+
+def _get_embedding_model():
+    """Load and cache the sentence embedding model (lazy, process-level singleton)."""
+    global _EMBEDDING_MODEL
+    if _EMBEDDING_MODEL is None:
+        from sentence_transformers import SentenceTransformer
+        _EMBEDDING_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+    return _EMBEDDING_MODEL
+
+
+def _try_semantic_similarity(fact: str, candidate: str, threshold: float) -> "bool | None":
+    """
+    Return True/False if sentence_transformers is available, else None (fallback).
+
+    Returns None to signal that the caller should use the substring fallback.
+    """
+    try:
+        from sentence_transformers import util as st_util
+        model = _get_embedding_model()
+        emb_f = model.encode(fact,      convert_to_tensor=True)
+        emb_c = model.encode(candidate, convert_to_tensor=True)
+        sim = st_util.cos_sim(emb_f, emb_c).item()
+        return bool(sim >= threshold)
+    except ImportError:
+        return None
+    except Exception as exc:
+        log.debug("_try_semantic_similarity: error (%s) — using substring fallback", exc)
+        return None
+
+
 
 # ---------------------------------------------------------------------------
 # Dataset types
@@ -150,20 +186,56 @@ class MemoryEvaluator:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def fact_accuracy(extracted: list[str], ground_truth: list[str]) -> float:
+    def fact_accuracy(
+        extracted: list[str],
+        ground_truth: list[str],
+        semantic_threshold: float = 0.85,
+    ) -> float:
         """
-        Fraction of extracted facts that are confirmed by ground truth.
+        Fraction of extracted facts confirmed by ground truth (B04).
 
-        Uses simple substring containment (case-insensitive) as a proxy
-        for semantic equivalence — suitable for research-paper baselines.
+        Uses semantic cosine similarity when sentence_transformers is installed;
+        falls back to substring containment when it is not (pre-B04 behaviour).
+
+        Parameters
+        ----------
+        extracted : list[str]
+            Facts extracted from the model response.
+        ground_truth : list[str]
+            Reference facts (gold standard).
+        semantic_threshold : float
+            Cosine similarity threshold for semantic confirmation (default 0.85).
         """
         if not extracted:
             return 1.0
-        confirmed = sum(
-            1 for f in extracted
-            if any(f.lower() in gt.lower() or gt.lower() in f.lower() for gt in ground_truth)
-        )
+        confirmed = 0
+        for fact in extracted:
+            for gt in ground_truth:
+                sem = _try_semantic_similarity(fact, gt, semantic_threshold)
+                if sem is not None:
+                    if sem:
+                        confirmed += 1
+                        break
+                else:
+                    # Fallback: substring containment
+                    if fact.lower() in gt.lower() or gt.lower() in fact.lower():
+                        confirmed += 1
+                        break
         return confirmed / len(extracted)
+
+    @staticmethod
+    def fact_accuracy_semantic(pred: str, gt: str, threshold: float = 0.85) -> float:
+        """
+        Single-string semantic accuracy convenience method (B04).
+
+        Returns 1.0 if ``pred`` and ``gt`` are semantically similar above
+        ``threshold``, 0.0 otherwise.  Falls back to substring containment
+        when sentence_transformers is not installed.
+        """
+        sem = _try_semantic_similarity(pred, gt, threshold)
+        if sem is not None:
+            return 1.0 if sem else 0.0
+        return 1.0 if (pred.lower() in gt.lower() or gt.lower() in pred.lower()) else 0.0
 
     @staticmethod
     def hallucination_rate(extracted: list[str], ground_truth: list[str]) -> float:
@@ -208,7 +280,10 @@ class MemoryEvaluator:
     ) -> float:
         """Fraction of asserted edges that appear in ground truth."""
         if not actual_edges:
-            return 1.0
+            # C10: no predictions = complete failure, not a perfect score.
+            # Returning 1.0 here would inflate benchmarks for models that
+            # produce no graph output at all.
+            return 0.0
         gt_set = {(f.lower(), r.lower(), t.lower()) for f, r, t in ground_truth_edges}
         hits = sum(
             1 for f, r, t in actual_edges

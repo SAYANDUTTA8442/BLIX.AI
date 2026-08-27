@@ -18,7 +18,12 @@ import os
 from pathlib import Path
 from typing import Optional
 
-import yaml
+try:
+    import yaml
+    _YAML_AVAILABLE = True
+except ImportError:
+    yaml = None  # type: ignore[assignment]
+    _YAML_AVAILABLE = False
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
@@ -106,6 +111,11 @@ def load_settings(path: Optional[Path] = None) -> AppSettings:
     raw: dict = {}
     if target.exists():
         with target.open("r", encoding="utf-8") as fh:
+            if yaml is None:
+                raise RuntimeError(
+                    "pyyaml is required to read blix.yaml but is not installed. "
+                    "Install it with: pip install pyyaml"
+                )
             raw = yaml.safe_load(fh) or {}
 
     # Env var overrides (dotenv already loaded above)
@@ -401,8 +411,22 @@ def export_config_snapshot(output_dir: Path | str | None = None) -> dict[str, An
         (out / "config_snapshot.json").write_text(
             json.dumps(snapshot, indent=2, default=str), encoding="utf-8")
 
-        # YAML (only if pyyaml available — it is, we import yaml above)
-        with (out / "config_snapshot.yaml").open("w", encoding="utf-8") as fh:
-            yaml.dump(snapshot, fh, default_flow_style=False, allow_unicode=True)
+        # YAML — defensive wrap in case pyyaml is absent in a stripped env (A28)
+        try:
+            import yaml as _yaml
+            with (out / "config_snapshot.yaml").open("w", encoding="utf-8") as fh:
+                _yaml.dump(snapshot, fh, default_flow_style=False, allow_unicode=True)
+        except ImportError:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "export_config_snapshot: pyyaml not installed — "
+                "config_snapshot.yaml was NOT written (JSON snapshot is complete)"
+            )
+        except Exception as exc:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "export_config_snapshot: YAML write failed (%s) — "
+                "config_snapshot.yaml may be incomplete; JSON snapshot is complete", exc
+            )
 
     return snapshot

@@ -79,6 +79,21 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
+# A21: explicit column list for policies table — keeps _ACTIVE_SQL and
+# _row_to_policy() in sync with the schema after migrations.
+_POLICY_COLUMNS = (
+    "policy_id, name, domain, policy_type, config_json, "
+    "alpha, beta_, success_count, failure_count, version, "
+    "is_active, user_id, tags_json, metadata_json, created_at, updated_at"
+)
+_POLICY_COLUMNS_SET = frozenset([
+    "policy_id", "name", "domain", "policy_type", "config_json",
+    "alpha", "beta_", "success_count", "failure_count", "version",
+    "is_active", "user_id", "tags_json", "metadata_json",
+    "created_at", "updated_at",
+])
+
+
 # ── Schema migration infrastructure (ISSUE-002) ──────────────────────────────
 #
 # _SCHEMA_VERSION is the current target version.  Increment this and add an
@@ -200,6 +215,7 @@ class PolicyStore:
         self._reward_log_counts: dict[str, int] = {}
         self._closed: bool = False  # A03: guard against double-close
         log.debug("PolicyStore initialised at %s", self._db_path)
+        self._validate_schema()  # A21: assert column list matches schema
 
     # ── Context manager support ──────────────────────────────────────
 
@@ -332,10 +348,97 @@ class PolicyStore:
                 )
                 raise
 
+    def update_atomic(
+        self,
+        policy_id: str,
+        mutator: Callable[[PolicyRecord], None],
+    ) -> PolicyRecord:
+        """
+        Atomically read, mutate, and write a policy record (B01).
+
+        The entire read-modify-write runs under a single ``_lock`` and
+        ``BEGIN IMMEDIATE`` transaction, eliminating lost-update races
+        where two concurrent callers each read the same stale record.
+
+        Parameters
+        ----------
+        policy_id : str
+            ID of the policy to update.
+        mutator : Callable[[PolicyRecord], None]
+            Called with the fresh DB copy of the record; mutates in-place.
+            Exceptions cause a rollback and are re-raised.
+
+        Returns
+        -------
+        PolicyRecord
+            The mutated, persisted record.
+
+        Raises
+        ------
+        ValueError
+            If ``policy_id`` is not found.
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT " + _POLICY_COLUMNS + " FROM policies WHERE policy_id=?",
+                    (policy_id,),
+                ).fetchone()
+                if row is None:
+                    self._conn.execute("ROLLBACK")
+                    raise ValueError(
+                        f"PolicyStore.update_atomic: policy {policy_id!r} not found"
+                    )
+                record = self._row_to_policy(row)
+                mutator(record)
+                d = record.to_dict()
+                params = {
+                    **d,
+                    "config_json":   json.dumps(d["config"]),
+                    "tags_json":     json.dumps(d["tags"]),
+                    "metadata_json": json.dumps(d["metadata"]),
+                }
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO policies VALUES ("
+                    "    :policy_id,:name,:domain,:policy_type,:config_json,"
+                    "    :alpha,:beta_,:success_count,:failure_count,:version,"
+                    "    :is_active,:user_id,:tags_json,:metadata_json,"
+                    "    :created_at,:updated_at"  
+                    ")", params
+                )
+                self._conn.execute("COMMIT")
+                log.debug(
+                    "PolicyStore.update_atomic: committed %s v%d conf=%.3f",
+                    record.name, record.version, record.confidence,
+                )
+                return record
+            except Exception:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+
     def get(self, policy_id: str) -> PolicyRecord | None:
-        row = self._conn.execute(
-            "SELECT * FROM policies WHERE policy_id=?", (policy_id,)
-        ).fetchone()
+        """
+        Fetch a single policy record by ID.
+
+        Thread-safe: acquires self._lock so the read cannot interleave
+        with a concurrent save()/update_atomic() that holds the same
+        lock.  Without the lock, a concurrent write transaction on the
+        shared connection causes SQLite to raise
+        ``InterfaceError: bad parameter or other API misuse`` (C01).
+
+        For concurrent read-modify-write use, prefer :meth:`update_atomic`
+        to avoid lost-update races — get() + external mutation + save()
+        is not atomic even with this lock.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT " + _POLICY_COLUMNS + " FROM policies WHERE policy_id=?",
+                (policy_id,)
+            ).fetchone()
         return self._row_to_policy(row) if row else None
 
     def delete(self, policy_id: str) -> bool:
@@ -363,53 +466,77 @@ class PolicyStore:
     _ACTIVE_SQL = {
         # key: (has_domain, has_policy_type, has_user_id)
         (False, False, False): (
-            "SELECT * FROM policies WHERE is_active=1"
+            "SELECT " + _POLICY_COLUMNS + " FROM policies WHERE is_active=1"
             " ORDER BY alpha/(alpha+beta_) DESC LIMIT ?",
             []
         ),
         (False, False, True): (
-            "SELECT * FROM policies WHERE is_active=1"
+            "SELECT " + _POLICY_COLUMNS + " FROM policies WHERE is_active=1"
             " AND (user_id=? OR user_id IS NULL)"
             " ORDER BY alpha/(alpha+beta_) DESC LIMIT ?",
             ["user_id"]
         ),
         (False, True, False): (
-            "SELECT * FROM policies WHERE is_active=1"
+            "SELECT " + _POLICY_COLUMNS + " FROM policies WHERE is_active=1"
             " AND policy_type=?"
             " ORDER BY alpha/(alpha+beta_) DESC LIMIT ?",
             ["policy_type"]
         ),
         (False, True, True): (
-            "SELECT * FROM policies WHERE is_active=1"
+            "SELECT " + _POLICY_COLUMNS + " FROM policies WHERE is_active=1"
             " AND policy_type=? AND (user_id=? OR user_id IS NULL)"
             " ORDER BY alpha/(alpha+beta_) DESC LIMIT ?",
             ["policy_type", "user_id"]
         ),
         (True, False, False): (
-            "SELECT * FROM policies WHERE is_active=1"
+            "SELECT " + _POLICY_COLUMNS + " FROM policies WHERE is_active=1"
             " AND domain=?"
             " ORDER BY alpha/(alpha+beta_) DESC LIMIT ?",
             ["domain"]
         ),
         (True, False, True): (
-            "SELECT * FROM policies WHERE is_active=1"
+            "SELECT " + _POLICY_COLUMNS + " FROM policies WHERE is_active=1"
             " AND domain=? AND (user_id=? OR user_id IS NULL)"
             " ORDER BY alpha/(alpha+beta_) DESC LIMIT ?",
             ["domain", "user_id"]
         ),
         (True, True, False): (
-            "SELECT * FROM policies WHERE is_active=1"
+            "SELECT " + _POLICY_COLUMNS + " FROM policies WHERE is_active=1"
             " AND domain=? AND policy_type=?"
             " ORDER BY alpha/(alpha+beta_) DESC LIMIT ?",
             ["domain", "policy_type"]
         ),
         (True, True, True): (
-            "SELECT * FROM policies WHERE is_active=1"
+            "SELECT " + _POLICY_COLUMNS + " FROM policies WHERE is_active=1"
             " AND domain=? AND policy_type=? AND (user_id=? OR user_id IS NULL)"
             " ORDER BY alpha/(alpha+beta_) DESC LIMIT ?",
             ["domain", "policy_type", "user_id"]
         ),
     }
+
+    def _validate_schema(self) -> None:
+        """
+        Assert that the 'policies' table columns match _POLICY_COLUMNS_SET (A21).
+
+        Called once at __init__ time.  Raises RuntimeError if a migration added
+        or removed a column without updating _POLICY_COLUMNS / _ACTIVE_SQL.
+        """
+        try:
+            rows = self._conn.execute("PRAGMA table_info(policies)").fetchall()
+        except sqlite3.Error as exc:
+            log.error("PolicyStore._validate_schema: PRAGMA table_info failed: %s", exc)
+            return  # non-fatal — don't block startup
+        actual = {row[1] for row in rows}  # row[1] is column name
+        if actual != _POLICY_COLUMNS_SET:
+            missing = _POLICY_COLUMNS_SET - actual
+            extra   = actual - _POLICY_COLUMNS_SET
+            msg = (
+                "PolicyStore schema mismatch (A21): "
+                f"missing={missing or 'none'}, extra={extra or 'none'}. "
+                "Update _POLICY_COLUMNS and _POLICY_COLUMNS_SET after migrations."
+            )
+            log.error(msg)
+            raise RuntimeError(msg)
 
     def all_active(
         self,
@@ -435,17 +562,19 @@ class PolicyStore:
         }
         params = [value_map[k] for k in param_keys] + [limit]
 
-        rows = self._conn.execute(sql, params).fetchall()
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_policy(r) for r in rows]
 
     def count(self, domain: PolicyDomain | None = None) -> int:
-        if domain:
+        with self._lock:
+            if domain:
+                return self._conn.execute(
+                    "SELECT COUNT(*) FROM policies WHERE domain=? AND is_active=1",
+                    (domain.value,)
+                ).fetchone()[0]
             return self._conn.execute(
-                "SELECT COUNT(*) FROM policies WHERE domain=? AND is_active=1",
-                (domain.value,)
-            ).fetchone()[0]
-        return self._conn.execute(
-            "SELECT COUNT(*) FROM policies WHERE is_active=1"
+                "SELECT COUNT(*) FROM policies WHERE is_active=1"
         ).fetchone()[0]
 
     def _row_to_policy(self, row: sqlite3.Row) -> PolicyRecord:
@@ -465,7 +594,7 @@ class PolicyStore:
             try:
                 with self._conn:
                     self._conn.execute("""
-                        INSERT OR IGNORE INTO policy_versions VALUES (
+                        INSERT INTO policy_versions VALUES (
                             :version_id,:policy_id,:version,:config_json,
                             :alpha,:beta_,:mean_reward,:created_at,:reason
                         )
@@ -478,10 +607,11 @@ class PolicyStore:
                 raise
 
     def get_history(self, policy_id: str) -> list[PolicyVersion]:
-        rows = self._conn.execute(
-            "SELECT * FROM policy_versions WHERE policy_id=? ORDER BY version ASC",
-            (policy_id,)
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT version_id, policy_id, version, config_json, alpha, beta_, mean_reward, created_at, reason FROM policy_versions WHERE policy_id=? ORDER BY version ASC",
+                (policy_id,)
+            ).fetchall()
         versions = []
         for row in rows:
             d = dict(row)
@@ -569,7 +699,6 @@ class PolicyStore:
             if _adma_settings is not None:
                 max_rows_per_policy = _adma_settings.reward_log.max_rows_per_policy
             else:
-                max_rows_per_policy = 1000
                 max_rows_per_policy = 1000
         pid = reward.policy_id  # may be None (broadcast reward)
         with self._lock:
@@ -675,15 +804,16 @@ class PolicyStore:
         Return the number of reward_log rows for a policy (or total if None).
         Uses a COUNT query — no full table scan.
         """
-        if policy_id is not None:
-            row = self._conn.execute(
-                "SELECT COUNT(*) FROM reward_log WHERE policy_id=?",
-                (policy_id,)
-            ).fetchone()
-        else:
-            row = self._conn.execute(
-                "SELECT COUNT(*) FROM reward_log"
-            ).fetchone()
+        with self._lock:
+            if policy_id is not None:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM reward_log WHERE policy_id=?",
+                    (policy_id,)
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM reward_log"
+                ).fetchone()
         return int(row[0]) if row else 0
 
     def recent_rewards(
@@ -691,13 +821,14 @@ class PolicyStore:
         policy_id: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        if policy_id:
-            rows = self._conn.execute(
-                "SELECT * FROM reward_log WHERE policy_id=? "
-                "ORDER BY timestamp DESC LIMIT ?", (policy_id, limit)
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
+        with self._lock:
+            if policy_id:
+                rows = self._conn.execute(
+                    "SELECT * FROM reward_log WHERE policy_id=? "
+                    "ORDER BY timestamp DESC LIMIT ?", (policy_id, limit)
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
                 "SELECT * FROM reward_log ORDER BY timestamp DESC LIMIT ?",
                 (limit,)
             ).fetchall()

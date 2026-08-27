@@ -31,6 +31,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from utils.logger import get_logger
+
+log = get_logger(__name__)
+
 
 @dataclass
 class ExpectedState:
@@ -100,8 +104,12 @@ class FutureMemoryStore:
             for item in raw:
                 s = ExpectedState.from_dict(item)
                 self._states[s.expected_state_id] = s
-        except Exception:
-            pass
+        except (json.JSONDecodeError, KeyError, ValueError, OSError) as exc:
+            log.warning(
+                "future_memory: could not load persisted state from %s — "
+                "starting with empty state (%s: %s)",
+                self._file, type(exc).__name__, exc,
+            )
 
     def _save(self) -> None:
         self._file.parent.mkdir(parents=True, exist_ok=True)

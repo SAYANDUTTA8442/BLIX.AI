@@ -135,10 +135,29 @@ class UserMemory:
         response_accepted: bool,
         correction: str = "",
         metadata: dict[str, Any] | None = None,
+        response_summary: str = "",
     ) -> MemoryNode:
-        """Record one interaction turn."""
+        """Record one interaction turn.
+
+        Parameters
+        ----------
+        query : str
+            The user's query text (truncated to 100 chars in storage).
+        response_accepted : bool
+            ``True`` if the user accepted the response; ``False`` if corrected.
+        correction : str
+            Optional corrected response provided by the user.
+        metadata : dict | None
+            Extra metadata merged into the node's metadata dict.
+        response_summary : str
+            Optional first ~200 chars of the response that was accepted or
+            corrected (A27).  Stored alongside the query so ``UserMemory``
+            can learn what kinds of outputs the user prefers.
+        """
         status = "accepted" if response_accepted else "corrected"
         text = f"[{status.upper()}] Query: {query[:100]}"
+        if response_summary:
+            text += f" | Response: {response_summary[:200]}"
         if correction:
             text += f" | Correction: {correction[:80]}"
         return self._hgshm.remember(
@@ -150,6 +169,7 @@ class UserMemory:
             source="user_interaction",
             tags=self._user_tags(["interaction", status]),
             metadata={"accepted": response_accepted, "correction": correction,
+                      "response_summary": response_summary[:200] if response_summary else "",
                       "user_id": self.user_id, **(metadata or {})},
         )
 

@@ -397,12 +397,13 @@ class HGSHM:
         }
 
     def close(self) -> None:
-        """Close database connections.  Safe to call multiple times.  (A03)"""
+        """Close database connections and release caches.  Safe to call multiple times.  (A03, A24)"""
         if self._closed:
             return
         self._closed = True
         self.graph_store.close()
         self.vector_index.close()
+        self.embedding_manager.close()  # A24: release numpy array cache
 
     # ── Context manager (ISSUE-011) ──────────────────────────────────
 

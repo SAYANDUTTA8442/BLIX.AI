@@ -1,5 +1,5 @@
 """
-PolicyLearner — contextual bandit policy learning via Thompson sampling.
+PolicyLearner — multi-armed bandit policy learning via Thompson sampling.
 
 For each (policy_type, context_key) pair, we maintain a set of
 PolicyRecord "arms". On each selection, we draw from Beta(α, β) for
@@ -162,23 +162,31 @@ class PolicyLearner:
         Register a new policy arm. If a policy with the same name,
         domain, and type already exists and overwrite=False, return
         the existing one.
+
+        Thread-safety (A29): the entire read-check-write sequence is
+        serialised under ``self._store._lock`` (an RLock, so the inner
+        ``save()`` / ``save_version()`` calls, which also acquire the
+        same lock, do not deadlock).  Without this guard a concurrent
+        ``register()`` on the same name could race through the ``all_active``
+        check and produce duplicate policy rows.
         """
-        existing = self._store.all_active(
-            domain=policy.domain, policy_type=policy.policy_type)
-        for e in existing:
-            if e.name == policy.name and e.user_id == policy.user_id:
-                if not overwrite:
+        with self._store._lock:
+            existing = self._store.all_active(
+                domain=policy.domain, policy_type=policy.policy_type)
+            for e in existing:
+                if e.name == policy.name and e.user_id == policy.user_id:
+                    if not overwrite:
+                        self._cache_put(e.policy_id, e)
+                        return e
+                    # overwrite: save current state as version, then update config
+                    self._store.save_version(e.snapshot(reason="overwrite"))
+                    e.config = policy.config
+                    e.version += 1
+                    self._store.save(e)
                     self._cache_put(e.policy_id, e)
                     return e
-                # overwrite: save current state as version, then update config
-                self._store.save_version(e.snapshot(reason="overwrite"))
-                e.config = policy.config
-                e.version += 1
-                self._store.save(e)
-                self._cache_put(e.policy_id, e)
-                return e
-        self._store.save(policy)
-        self._cache_put(policy.policy_id, policy)
+            self._store.save(policy)
+            self._cache_put(policy.policy_id, policy)
         log.debug("PolicyLearner: registered %s (id=%s)", policy.name, policy.policy_id[:8])
         return policy
 
@@ -275,8 +283,8 @@ class PolicyLearner:
         if reward.policy_id:
             policy = self._get_cached(reward.policy_id)
             if policy and policy.is_active:
-                self._update_arm(policy, reward.value)
-                updated.append(policy)
+                fresh = self._update_arm(policy, reward.value)
+                updated.append(fresh if fresh is not None else policy)
         else:
             # Broadcast: update only the arm most recently selected in this
             # context (A07 — violates bandit theory to reward all arms).
@@ -292,8 +300,8 @@ class PolicyLearner:
                     continue
                 arm = self._get_cached(policy_id)
                 if arm and arm.is_active and arm.policy_type == pt:
-                    self._update_arm(arm, reward.value)
-                    updated.append(arm)
+                    fresh = self._update_arm(arm, reward.value)
+                    updated.append(fresh if fresh is not None else arm)
                 else:
                     log.debug(
                         "observe: broadcast reward dropped — arm %s not "
@@ -315,23 +323,45 @@ class PolicyLearner:
 
     # ── Internal update ──────────────────────────────────────────────
 
-    def _update_arm(self, policy: PolicyRecord, reward_value: float) -> None:
-        """Apply reward to a single arm and persist."""
-        old_version = policy.version
-        policy.update(reward_value, threshold=self._threshold)
-        self._cache_put(policy.policy_id, policy)
+    def _update_arm(self, policy: PolicyRecord, reward_value: float) -> "PolicyRecord | None":
+        """
+        Apply reward to a single arm and persist atomically (C01 fix).
 
-        # Snapshot every N updates
-        if policy.version % self._snapshot_every == 0:
+        Uses ``update_atomic()`` so the read-modify-write is serialised
+        under a ``BEGIN IMMEDIATE`` transaction.  The in-memory ``policy``
+        object is kept for cache coherency but the canonical update
+        happens inside the atomic mutator, preventing lost updates when
+        multiple threads call ``observe()`` concurrently for the same arm.
+        """
+        threshold = self._threshold
+        snapshot_every = self._snapshot_every
+
+        def _mutator(fresh: PolicyRecord) -> PolicyRecord:
+            # Apply reward to the freshly-read DB copy — not the stale caller copy
+            fresh.update(reward_value, threshold=threshold)
+            return fresh
+
+        updated = self._store.update_atomic(policy.policy_id, _mutator)
+        if updated is None:
+            log.warning(
+                "PolicyLearner._update_arm: policy %s vanished during update",
+                policy.policy_id[:8]
+            )
+            return None
+
+        # Snapshot every N updates (based on the authoritative DB version)
+        if updated.version % snapshot_every == 0:
             self._store.save_version(
-                policy.snapshot(reason=f"auto-snapshot at v{policy.version}"))
+                updated.snapshot(reason=f"auto-snapshot at v{updated.version}"))
 
-        self._store.save(policy)
+        # Refresh cache with the consistent DB state
+        self._cache_put(updated.policy_id, updated)
         # A01: record the epoch at which this policy was written to DB
-        self._epoch_at_last_write[policy.policy_id] = self._decay_epoch
+        self._epoch_at_last_write[updated.policy_id] = self._decay_epoch
         log.debug(
             "PolicyLearner: updated %s → conf=%.3f (n=%d)",
-            policy.name, policy.confidence, policy.total_observations)
+            updated.name, updated.confidence, updated.total_observations)
+        return updated
 
     # ── Batched decay (ISSUE-001) ─────────────────────────────────────
 

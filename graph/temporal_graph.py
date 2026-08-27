@@ -5,9 +5,9 @@ The v0.3.1 ``MemoryGraph`` is static: an edge either exists or doesn't.
 ``TemporalGraph`` adds a time dimension to graph relations, so the
 knowledge graph can represent evolution rather than only a snapshot:
 
-    Sayan —uses→ Python      [valid_from=2024-01, valid_to=2025-01]
-    Sayan —uses→ PyTorch     [valid_from=2025-01, valid_to=2026-01]
-    Sayan —uses→ Rust        [valid_from=2026-01, valid_to=None]
+    alice —uses→ Python      [valid_from=2024-01, valid_to=2025-01]
+    alice —uses→ PyTorch     [valid_from=2025-01, valid_to=2026-01]
+    alice —uses→ Rust        [valid_from=2026-01, valid_to=None]
 
 This module wraps/extends ``core.memory_graph.MemoryGraph`` rather than
 replacing it: a ``TemporalGraph`` holds its own list of

@@ -102,7 +102,9 @@ class RewardSignal:
         0.0 = complete failure.  Values outside [0,1] are clamped.
     context:
         Free-form context data (task type, query, subsystem, etc.)
-        used for contextual bandit arm selection.
+        used for multi-armed bandit arm selection.
+
+    Note: arm selection is not context-conditioned (C09). ``_context_key`` scopes reward attribution only.
     policy_id:
         Which policy this reward updates (None = broadcast to all
         policies of the matching type).

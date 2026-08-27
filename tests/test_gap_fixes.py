@@ -286,7 +286,7 @@ class TestFix8DashboardStats:
     @pytest.fixture(scope="class")
     def ctx(self, tmp_path_factory):
         import sys
-        sys.path.insert(0, "/home/claude/blix_v03")
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from config import settings as _settings
         tmp = tmp_path_factory.mktemp("ctx_gap")
         _settings.settings.memory.conversations_file = tmp / "conv.json"
@@ -324,7 +324,7 @@ class TestFix9Pagination:
         from api.routers.curiosity import router
 
         import sys
-        sys.path.insert(0, "/home/claude/blix_v03")
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from config import settings as _settings
         _settings.settings.memory.conversations_file = tmp_path / "c.json"
         _settings.settings.memory.profile_file = tmp_path / "p.json"
@@ -359,7 +359,7 @@ class TestFix9Pagination:
 class TestFix12Shutdown:
     def test_shutdown_does_not_raise(self, tmp_path):
         import sys
-        sys.path.insert(0, "/home/claude/blix_v03")
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from config import settings as _settings
         _settings.settings.memory.conversations_file = tmp_path / "c.json"
         _settings.settings.memory.profile_file = tmp_path / "p.json"
@@ -373,7 +373,7 @@ class TestFix12Shutdown:
 
     def test_shutdown_persists_beliefs(self, tmp_path):
         import sys
-        sys.path.insert(0, "/home/claude/blix_v03")
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from config import settings as _settings
         _settings.settings.memory.conversations_file = tmp_path / "c.json"
         _settings.settings.memory.profile_file = tmp_path / "p.json"

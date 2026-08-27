@@ -26,6 +26,7 @@ except ImportError:
 
 __all__ = [
     "sanitize_task_text",
+    "sanitize_memory_snippet",
     "PolicySelector",
     "CompiledPrompt",
     "PolicyCompiler",
@@ -48,6 +49,7 @@ log = logging.getLogger(__name__)
 # declarations inside the user turn, etc.) but preserves the content
 # of legitimate programming, writing, and math queries.
 _INJECTION_PATTERNS = [
+    # ── Original patterns ────────────────────────────────────────────
     re.compile(r'\bignore\s+(previous|all|prior)\s+(instructions?|prompt|context)\b', re.I),
     re.compile(r'\bdisregard\s+(all|previous|prior|above)\b', re.I),
     re.compile(r'(?:^|\n)\s*(?:system|assistant|user)\s*:\s*', re.I),
@@ -55,6 +57,22 @@ _INJECTION_PATTERNS = [
     re.compile(r'\byou\s+are\s+now\s+(?:a|an)\s+\w+\s+(?:AI|assistant|model)\b', re.I),
     re.compile(r'\bact\s+as\s+(?:a|an)\s+\w+\s+(?:AI|assistant|without restrictions?)\b', re.I),
     re.compile(r'\bDAN\b|\bDo\s+Anything\s+Now\b', re.I),
+    # ── A20: additional attack classes ───────────────────────────────
+    # LLaMA/Alpaca template injection via [INST] tags
+    re.compile(r'\[\s*/?\s*(?:INST|SYS|system|instruction)\s*\]', re.I),
+    # Excessive newlines to push system prompt out of context window
+    re.compile(r'\n{5,}'),
+    # Markdown heading injection (# System, ## Instructions, etc.)
+    re.compile(r'(?:^|\n)#{1,6}\s*(?:system|instructions?|override|admin|root|prompt)\b', re.I),
+    # Jailbreak role-play openers
+    re.compile(r'\bpretend\s+(?:you\s+are|to\s+be)\b', re.I),
+    re.compile(r'\bforget\s+(?:all|your|previous|prior)\b', re.I),
+    # ── B09: additional attack classes ───────────────────────────────
+    # Zero-width space bypass: "ign​ore" (U+200B inserted mid-word)
+    re.compile(r'ign[\u200B-\u200D\uFEFF]?ore\b', re.I),
+    # Unicode fullwidth lookalikes for "system" and "instructions"
+    re.compile(r'\uff53\uff59\uff53\uff54\uff45\uff4d', re.I),   # ｓｙｓｔｅｍ
+    re.compile(r'\uff49\uff4e\uff53\uff54\uff52\uff55\uff43\uff54\uff49\uff4f\uff4e', re.I),  # ｉｎｓｔｒｕｃｔｉｏｎ
 ]
 _INJECTION_REPLACEMENT = "[filtered]"
 
@@ -85,6 +103,34 @@ def sanitize_task_text(text: str, max_length: int = 4000) -> str:
     for pattern in _INJECTION_PATTERNS:
         result = pattern.sub(_INJECTION_REPLACEMENT, result)
     return result
+
+
+def sanitize_memory_snippet(text: str, max_length: int = 200) -> str:
+    """
+    Sanitize a memory node snippet before inserting it into a compiled prompt (A20).
+
+    Memory nodes may originate from untrusted sources (document processors,
+    external feeds) and could contain prompt-injection content.  Apply the
+    same best-effort filter as :func:`sanitize_task_text`.
+
+    Parameters
+    ----------
+    text : str
+        Raw memory snippet text (already truncated by the caller).
+    max_length : int
+        Maximum length after sanitization (default 200, longer than task
+        snippets since memory context can be richer).
+
+    Returns
+    -------
+    str
+        Sanitized snippet, safe to include in a compiled prompt.
+    """
+    result = text[:max_length]
+    for pattern in _INJECTION_PATTERNS:
+        result = pattern.sub(_INJECTION_REPLACEMENT, result)
+    return result.strip()
+
 
 def _default_compiler_cfg():
     """Return prompt_compiler config from the module-level singleton (A19: fail-fast import)."""
@@ -312,11 +358,17 @@ class PolicyCompiler:
         _cfg = _default_compiler_cfg()
         max_memory_nodes = max_memory_nodes if max_memory_nodes is not None else (_cfg.max_memory_nodes if _cfg else 5)
         token_budget = token_budget if token_budget is not None else (_cfg.token_budget if _cfg else 2000)
+        max_sys_chars = _cfg.max_system_instructions_chars if _cfg else 8000
 
         # ISSUE-010: sanitize user-supplied task text to mitigate prompt injection.
         # user_id is validated upstream by UserMemory.validate_user_id;
         # we still strip it here for defence-in-depth.
         task = sanitize_task_text(task)
+        # B09: structural separator — gives the LLM a clear token boundary
+        # between injected system context and user-supplied task text,
+        # making it harder for prompt-injection in task text to bleed into
+        # the system instruction context.
+        task = f"\n\n--- TASK ---\n{task}\n--- END TASK ---" 
 
         ctx = {**(context or {}), "task": task[:100], "user_id": user_id}
 
@@ -356,6 +408,15 @@ class PolicyCompiler:
 
         system_instructions = "\n".join(sys_parts)
 
+        # A22: enforce character limit on system_instructions
+        if len(system_instructions) > max_sys_chars:
+            log.debug(
+                "PolicyCompiler: system_instructions truncated from %d to %d chars "
+                "(max_system_instructions_chars=%d)",
+                len(system_instructions), max_sys_chars, max_sys_chars,
+            )
+            system_instructions = system_instructions[:max_sys_chars]
+
         # ── 3. Build user context from user policies ─────────────────
         user_parts = []
         style = user_policies.get(PolicyType.ANSWER_STYLE)
@@ -393,12 +454,14 @@ class PolicyCompiler:
                 if memories:
                     memory_parts.append("Relevant knowledge:")
                     for rm in memories:
-                        snippet = rm.node.text[:120].strip()
+                        # A20: sanitize snippet — memory nodes may come from untrusted sources
+                        snippet = sanitize_memory_snippet(rm.node.text[:120].strip())
                         memory_parts.append(f"  • {snippet}")
                 if memory_context.principle_nodes:
                     memory_parts.append("Applicable principles:")
                     for p_node in memory_context.principle_nodes[:3]:
-                        memory_parts.append(f"  → {p_node.text[:100]}")
+                        safe_principle = sanitize_memory_snippet(p_node.text[:100])
+                        memory_parts.append(f"  → {safe_principle}")
                 if memory_context.has_contradictions:
                     memory_parts.append(
                         f"⚠ Note: {len(memory_context.contradictions)} "

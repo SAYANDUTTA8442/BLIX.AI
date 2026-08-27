@@ -1,10 +1,25 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta:__legacy__"
+
+[tool.setuptools.packages.find]
+# Exclude development-only packages from the installed wheel.
+# Without this, auto-discovery installs tests/, experiments/,
+# hypothesis/, and learning/ into site-packages.
+exclude = [
+    "tests",
+    "tests.*",
+    "experiments",
+    "experiments.*",
+    "hypothesis",
+    "hypothesis.*",
+    "learning",
+    "learning.*",
+]
 
 [project]
 name = "blix"
-version = "0.3.17"
+version = "0.3.19.9"
 description = "Curiosity + Active Experimentation — CuriosityEngine, HypothesisManager, ExperimentPlanner, KnowledgeGapTracker"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,6 +36,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+eval = [
+    "datasets>=2.0.0",
+    "langchain>=0.1.0",
+    "langchain-community>=0.0.1",
+    "chromadb>=0.4.0",
+    "sentence-transformers>=2.2.0",
+    "rouge-score>=0.1.0",
+    "scipy>=1.10.0",
+    "tqdm>=4.65.0",
+    "numpy>=1.24.0",
+    "pandas>=1.5.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "psutil>=5.9.0",
+    "scikit-learn>=1.2.0",
+    "transformers>=4.30.0",
+    "sacrebleu>=2.0.0",
+]
 transformers = [
     "torch>=2.0.0",
     "transformers>=4.40.0",

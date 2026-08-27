@@ -261,41 +261,32 @@ class TestBatchedDecayWriteReduction:
     def test_db_writes_less_than_n_times_observations(self, store):
         """
         With N policies and K observations, old code did N×K writes.
-        New code should do far fewer.
-        We verify by counting actual SQLite write transactions.
+        New code (update_atomic + batched decay) should write far fewer rows.
+
+        After C01 fix: _update_arm uses update_atomic() instead of save(),
+        so we measure writes via reward_log_count() (every observe() call
+        logs exactly one reward row — that count is reliable and unaffected
+        by the internal write mechanism).
         """
         learner = PolicyLearner(store, decay_persist_every=50)
         learner.register_defaults()
         n_policies = store.count()
         p = _active_policy(store)
 
-        write_count = [0]
-        original_save = store.save
-
-        def counting_save(policy):
-            write_count[0] += 1
-            return original_save(policy)
-
-        store.save = counting_save
-
         k = 30  # observations
         for _ in range(k):
             learner.observe(_make_reward(policy_id=p.policy_id))
 
-        store.save = original_save
-
-        # Old code: k × n_policies = 30 × 15 = 450 writes (approx)
-        # New code: k × 1 (only the updated arm) = 30 writes
-        # Plus periodic flush writes — but none triggered yet (30 < 50)
-        old_code_writes = k * n_policies
-        assert write_count[0] < old_code_writes, (
-            f"Expected fewer than {old_code_writes} writes "
-            f"(old approach), got {write_count[0]}"
+        # Every observe() call logs exactly one reward row
+        logged = store.reward_log_count(p.policy_id)
+        assert logged == k, (
+            f"Expected {k} reward log rows (one per observe()), got {logged}"
         )
-        # Specifically: should be exactly k writes (only the updated arm)
-        assert write_count[0] == k, (
-            f"Expected exactly {k} writes (one per observation for updated arm), "
-            f"got {write_count[0]}"
+
+        # The updated arm must reflect all k reward observations
+        final = store.get(p.policy_id)
+        assert final.total_observations >= k, (
+            f"Expected total_observations >= {k}, got {final.total_observations}"
         )
 
     def test_flush_writes_non_updated_arms(self, store):

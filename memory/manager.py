@@ -146,9 +146,15 @@ class MemoryManager:
         routed = RoutedContext(query=query, primary_split=top_k)
 
         # ── Domain queries ────────────────────────────────────────────
+        # Bug-fix: top_k // 2 floors to 0 when top_k < 2, silently returning
+        # zero results from system and user memory even though the caller
+        # requested results. max(1, ...) guarantees at least one result per
+        # sub-domain as long as top_k >= 1.
+        sub_k = max(1, top_k // 2)
+
         if include_system:
             try:
-                routed.system_context = self._system.recall(query, top_k=top_k // 2)
+                routed.system_context = self._system.recall(query, top_k=sub_k)
                 routed.domains_queried.append("system")
             except Exception as exc:
                 log.warning("MemoryManager: system query failed: %s", exc)
@@ -156,7 +162,7 @@ class MemoryManager:
         if include_user:
             try:
                 user_mem = self.get_user_memory(user_id)
-                routed.user_context = user_mem.recall(query, top_k=top_k // 2)
+                routed.user_context = user_mem.recall(query, top_k=sub_k)
                 routed.domains_queried.append("user")
             except Exception as exc:
                 log.warning("MemoryManager: user query failed: %s", exc)

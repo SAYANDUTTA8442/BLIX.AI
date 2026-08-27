@@ -556,8 +556,14 @@ class BlixContext:
                 # Surface low-confidence signal without blocking the event loop
                 try:
                     self.curiosity_engine.generate_signals(top_k=3)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # B12: log but never propagate — this runs inside an event callback
+                    # and must not crash the event loop regardless of the error type.
+                    log.warning(
+                        "curiosity_engine.generate_signals failed in confidence callback "
+                        "(%s: %s) — skipping signal generation",
+                        type(exc).__name__, exc,
+                    )
 
         self.event_bus.subscribe(EventType.FAILURE, _on_failure)
         self.event_bus.subscribe(EventType.CONFIDENCE_CHANGED, _on_confidence_changed)

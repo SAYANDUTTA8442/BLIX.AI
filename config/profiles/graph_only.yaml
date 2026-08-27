@@ -1,0 +1,31 @@
+# Ablation: Graph edges only (no hierarchy, no ADMA, no temporal decay)
+#
+# Tests whether causal/relational graph edges alone provide reasoning value
+# over flat semantic retrieval, in isolation from hierarchy and policy learning.
+# Memory is flat but graph-connected — multi-hop retrieval is enabled.
+#
+# Expected rank: Low-Medium — graph edges improve multi-hop QA (HotpotQA)
+# but without hierarchy the memory context can be noisy.
+#
+# Usage: --profiles graph_only
+
+features:
+  hybrid_retrieval: true
+  adaptive_policy: false
+  graph_reasoning: true      # graph edges are the key feature
+  temporal: false
+  hierarchy: false
+
+# HybridWeights — maximise graph_distance weight; zero hierarchy and recency.
+retrieval_weights:
+  semantic: 0.35
+  vector: 0.20
+  graph_distance: 0.30      # boosted: graph reasoning is the key feature
+  importance: 0.10
+  confidence: 0.05
+  recency: 0.00             # no temporal weighting
+  hierarchy: 0.00           # no hierarchy
+  context_similarity: 0.00
+  attention: 0.00
+  belief_confidence: 0.00
+  planning_relevance: 0.00

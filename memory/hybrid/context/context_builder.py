@@ -30,6 +30,11 @@ from memory.hybrid.graph.graph_store import GraphStore
 from memory.hybrid.graph.graph_index import GraphIndex
 from memory.hybrid.retrieval.hybrid_retriever import HybridRetriever, HybridWeights
 from memory.hybrid.graph.graph_traversal import GraphTraversal
+try:
+    from config.schema import ContextBuilderSettings as _CBSettings
+    _DEFAULT_CBS = _CBSettings()
+except Exception:
+    _DEFAULT_CBS = None  # type: ignore
 
 log = logging.getLogger(__name__)
 
@@ -68,16 +73,19 @@ class ContextBuilder:
         include_principles: bool = True,
         include_concepts: bool = True,
         min_confidence: float = 0.1,
+        context_builder_settings: "_CBSettings | None" = None,
     ) -> None:
-        self._retriever     = hybrid_retriever
-        self._graph         = graph_store
-        self._index         = graph_index or GraphIndex(graph_store)
-        self._traversal     = GraphTraversal(graph_store)
-        self._top_k         = top_k
-        self._expand_depth  = expand_depth
+        self._retriever      = hybrid_retriever
+        self._graph          = graph_store
+        self._index          = graph_index or GraphIndex(graph_store)
+        self._traversal      = GraphTraversal(graph_store)
+        self._top_k          = top_k
+        self._expand_depth   = expand_depth
         self._inc_principles = include_principles
         self._inc_concepts   = include_concepts
         self._min_confidence = min_confidence
+        # A30: pipeline limits — use provided settings or fall back to defaults
+        self._cbs = context_builder_settings or _DEFAULT_CBS
 
     def build(
         self,
@@ -130,15 +138,15 @@ class ContextBuilder:
             ctx.total_nodes_searched += len(supporting)
 
         # ── Step 3: Temporal memories (recent + frequent) ────────────
-        ctx.temporal_memories = self._get_temporal(k // 2)
+        ctx.temporal_memories = self._get_temporal(max(1, k // 2))
 
         # ── Step 4: Concepts ─────────────────────────────────────────
         if self._inc_concepts:
-            ctx.concept_nodes = self._get_nodes_of_type(MemoryType.CONCEPT, k // 3)
+            ctx.concept_nodes = self._get_nodes_of_type(MemoryType.CONCEPT, max(1, k // 3))
 
         # ── Step 5: Principles ───────────────────────────────────────
         if self._inc_principles:
-            ctx.principle_nodes = self._get_nodes_of_type(MemoryType.PRINCIPLE, k // 3)
+            ctx.principle_nodes = self._get_nodes_of_type(MemoryType.PRINCIPLE, max(1, k // 3))
 
         # ── Step 6: Beliefs ──────────────────────────────────────────
         belief_ids = list(self._index.by_type(MemoryType.BELIEF))
@@ -149,7 +157,7 @@ class ContextBuilder:
             if bid not in all_ids
         ]
         ctx.belief_nodes = [b for b in related_beliefs
-                            if b is not None and b.confidence >= self._min_confidence][:k // 3]
+                            if b is not None and b.confidence >= self._min_confidence][:max(1, k // 3)]
 
         # ── Step 7: Contradictions ───────────────────────────────────
         all_retrieved_ids = (
@@ -165,12 +173,12 @@ class ContextBuilder:
         # ── Step 9: Knowledge gaps ────────────────────────────────────
         gap_ids = list(self._index.by_type(MemoryType.GAP))
         ctx.knowledge_gaps = [
-            n for n in (self._graph.get_node(gid) for gid in gap_ids[:5])
+            n for n in (self._graph.get_node(gid) for gid in gap_ids[:(self._cbs.max_gap_nodes if self._cbs else 5)])
             if n is not None
         ]
 
         # ── Step 10: Graph neighbourhood ─────────────────────────────
-        ctx.graph_neighbourhood = self._get_neighbourhood_edges(primary_ids[:3])
+        ctx.graph_neighbourhood = self._get_neighbourhood_edges(primary_ids[:(self._cbs.max_neighbourhood_seeds if self._cbs else 3)])
 
         # ── Step 11: Touch accessed nodes ─────────────────────────────
         for rm in ctx.primary_memories:
@@ -189,7 +197,8 @@ class ContextBuilder:
     ) -> list[RetrievedMemory]:
         seen = set(seed_ids)
         results: list[RetrievedMemory] = []
-        for seed_id in seed_ids[:3]:
+        _max_seeds = self._cbs.max_expansion_seeds if self._cbs else 3
+        for seed_id in seed_ids[:_max_seeds]:
             traversal = self._traversal.bfs(
                 seed_id,
                 max_depth=self._expand_depth,
@@ -200,7 +209,7 @@ class ContextBuilder:
                 if node.node_id in seen:
                     continue
                 seen.add(node.node_id)
-                graph_score = node.importance * (0.7 ** traversal.depth_reached)
+                graph_score = node.importance * ((self._cbs.graph_score_decay if self._cbs else 0.7) ** traversal.depth_reached)
                 results.append(RetrievedMemory(
                     node=node, graph_score=graph_score, final_score=graph_score))
         results.sort(key=lambda r: r.final_score, reverse=True)
@@ -238,14 +247,16 @@ class ContextBuilder:
         return pairs
 
     def _extract_causal_chains(
-        self, seed_ids: list[str], max_chain_depth: int = 3
+        self, seed_ids: list[str], max_chain_depth: int | None = None
     ) -> list[list[MemoryNode]]:
         chains: list[list[MemoryNode]] = []
         causal_relations = [EdgeRelation.CAUSES, EdgeRelation.ENABLES, EdgeRelation.BLOCKS]
-        for seed_id in seed_ids[:3]:
+        _max_seeds = self._cbs.max_causal_seeds if self._cbs else 3
+        for seed_id in seed_ids[:_max_seeds]:
+            _depth = max_chain_depth if max_chain_depth is not None else (self._cbs.max_causal_depth if self._cbs else 3)
             traversal = self._traversal.dfs(
                 seed_id,
-                max_depth=max_chain_depth,
+                max_depth=_depth,
                 relations=causal_relations,
                 direction="out",
             )
@@ -254,7 +265,7 @@ class ContextBuilder:
                     chain = [n for n in (self._graph.get_node(nid) for nid in path) if n]
                     if len(chain) >= 2:
                         chains.append(chain)
-            if len(chains) >= 3:
+            if len(chains) >= (self._cbs.max_causal_chains if self._cbs else 3):
                 break
         return chains
 
@@ -270,4 +281,4 @@ class ContextBuilder:
                 if edge.edge_id not in seen_ids:
                     seen_ids.add(edge.edge_id)
                     edges.append(edge)
-        return edges[:50]
+        return edges[:(self._cbs.max_neighbourhood_edges if self._cbs else 50)]

@@ -18,6 +18,7 @@ PrincipleStoreShim — the graph is unified.
 """
 from __future__ import annotations
 import logging
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -34,10 +35,40 @@ log = logging.getLogger(__name__)
 # A10: bounded to prevent unbounded SQLite connection growth in multi-tenant use.
 _HGSHM_REGISTRY: dict[str, HGSHM] = {}
 _REGISTRY_MAX: int = 128
+# Bug-fix: registry had no lock — concurrent _get_hgshm() calls for the same
+# key could both pass the "key not in registry" check, create two HGSHM
+# instances, and the first would be orphaned (leaked SQLite connection).
+_REGISTRY_LOCK: threading.Lock = threading.Lock()
 
-def _get_hgshm(memory_dir: Path) -> HGSHM:
-    key = str(memory_dir.resolve())
-    if key not in _HGSHM_REGISTRY:
+def _registry_key(memory_dir: Path, user_id: "str | None" = None) -> str:
+    # Return the registry lookup key, optionally scoped to a user (B10).
+    base = str(memory_dir.resolve())
+    return f"{user_id}:{base}" if user_id else base
+
+
+def _get_hgshm(memory_dir: Path, user_id: "str | None" = None) -> HGSHM:
+    """
+    Return the shared HGSHM instance for *memory_dir*, creating it if needed.
+
+    Parameters
+    ----------
+    memory_dir : Path
+        Filesystem directory that holds the HGSHM SQLite databases.
+    user_id : str | None
+        Optional tenant identifier (B10).  When provided, two callers with
+        the same *memory_dir* but different *user_id* values receive separate
+        HGSHM instances, preventing cross-tenant state leakage.
+    """
+    key = _registry_key(memory_dir, user_id)
+    # Fast path: key already present — check without acquiring the lock.
+    # dict reads are atomic in CPython (GIL), so this is safe as a pre-check.
+    if key in _HGSHM_REGISTRY:
+        return _HGSHM_REGISTRY[key]
+    with _REGISTRY_LOCK:
+        # Re-check inside the lock: another thread may have created the
+        # instance while we were waiting to acquire _REGISTRY_LOCK.
+        if key in _HGSHM_REGISTRY:
+            return _HGSHM_REGISTRY[key]
         # Evict oldest entry if at capacity
         if len(_HGSHM_REGISTRY) >= _REGISTRY_MAX:
             oldest_key, oldest_inst = next(iter(_HGSHM_REGISTRY.items()))
@@ -49,7 +80,7 @@ def _get_hgshm(memory_dir: Path) -> HGSHM:
             log.debug("_get_hgshm: evicted oldest registry entry %s (cap=%d)",
                       oldest_key, _REGISTRY_MAX)
         _HGSHM_REGISTRY[key] = HGSHM(memory_dir)
-    return _HGSHM_REGISTRY[key]
+        return _HGSHM_REGISTRY[key]
 
 
 def close_registry() -> int:
@@ -62,13 +93,14 @@ def close_registry() -> int:
     A10 fix: registry had no eviction or shutdown path.
     """
     closed = 0
-    for inst in list(_HGSHM_REGISTRY.values()):
-        try:
-            inst.close()
-            closed += 1
-        except Exception:
-            pass
-    _HGSHM_REGISTRY.clear()
+    with _REGISTRY_LOCK:
+        for inst in list(_HGSHM_REGISTRY.values()):
+            try:
+                inst.close()
+                closed += 1
+            except Exception:
+                pass
+        _HGSHM_REGISTRY.clear()
     log.debug("close_registry: closed %d HGSHM instance(s)", closed)
     return closed
 

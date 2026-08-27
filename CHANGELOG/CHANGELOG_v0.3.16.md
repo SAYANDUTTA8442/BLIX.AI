@@ -8,7 +8,7 @@ longer stores only knowledge — it now stores **policies**.
 
 Static prompting is replaced by a dynamic prompt compiler. Retrieval weights
 and planner configurations are no longer fixed — they are selected by a
-contextual bandit at runtime and updated from observable outcomes.
+multi-armed bandit at runtime and updated from observable outcomes.
 
 ## Research Contribution
 
@@ -19,7 +19,7 @@ Core contributions:
 1. **Dual Memory** — System Memory (operational knowledge) + User Memory (personalisation)
 2. **Policy Memory** — policies stored as learnable bandit arms, not static config
 3. **Adaptive Prompt Compiler** — dynamic prompt assembly from active policy configs
-4. **Online Policy Learning** — contextual bandits with Thompson sampling (no RLHF)
+4. **Online Policy Learning** — multi-armed bandit with Thompson sampling (no RLHF)
 5. **Reward Engine** — 15 observable reward signals (8 system, 7 user)
 6. **Adaptive Retrieval** — policy-driven HybridRetriever weight selection
 7. **Adaptive Planning** — policy-driven BeamSearchPlanner configuration
@@ -41,7 +41,7 @@ policy/
   reward.py        SystemRewardEngine (8 reward functions)
                    UserRewardEngine (7 reward functions)
                    RewardEngine (unified facade with dispatch)
-  learner.py       PolicyLearner — contextual bandit, Thompson sampling
+  learner.py       PolicyLearner — multi-armed bandit, Thompson sampling
                    _default_policies() — 15 default arms across 5 types
   optimizer.py     PolicyOptimizer — decay, aging, retirement, mutation, rollback
   compiler.py      PolicySelector, PolicyCompiler, CompiledPrompt
@@ -97,7 +97,16 @@ System Policies ──── PolicyLearner ──── User Policies
 
 ## Policy Learning Algorithm
 
-**Contextual Bandits with Thompson Sampling over Beta distributions.**
+**Multi-Armed Bandit with Thompson Sampling over Beta distributions.**
+
+> **Implementation note (C09):** The arm pool and Thompson sampling are
+> not conditioned on context features. `_context_key()` scopes reward
+> attribution (which arm receives credit for an observed outcome) but
+> does not partition the arm pool into per-context subsets. This is a
+> standard MAB, not a true contextual bandit (e.g. LinUCB / LinThompson
+> which maintain separate feature-weight vectors per context). The
+> distinction matters when writing the paper: claim MAB + context-aware
+> credit assignment, not contextual bandit.
 
 - Each `PolicyRecord` maintains Beta(α, β) state
 - Arm selection: draw from Beta(α, β) for each arm; pick highest draw
@@ -106,7 +115,7 @@ System Policies ──── PolicyLearner ──── User Policies
 - Convergence: detected when confidence spread over last 5 snapshots < 0.02
 - Rollback: triggered when recent mean drops > 0.10 vs older mean
 
-This is provably optimal for explore/exploit in the bandit setting (sublinear regret).
+Beta-Bernoulli Thompson sampling achieves sublinear regret in the MAB setting.
 No ML library required — pure Python, interpretable, symbolically verifiable.
 
 ---

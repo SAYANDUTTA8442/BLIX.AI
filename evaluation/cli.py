@@ -16,8 +16,8 @@ Dataset JSON format
       "query": "What is gradient descent?",
       "relevant_memory_ids": [1, 3, 5],
       "ground_truth_facts": ["Gradient descent minimises loss by following the negative gradient."],
-      "ground_truth_profile": {"name": "Sayan"},
-      "ground_truth_edges": [["sayan", "works_on", "blix"]],
+      "ground_truth_profile": {"name": "alice"},
+      "ground_truth_edges": [["alice", "works_on", "my-project"]],
       "reference_summary": "Discussed gradient descent optimisation."
     }
   ]

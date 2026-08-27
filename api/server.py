@@ -24,11 +24,37 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from api.context import BlixContext
 from api.deps import set_context
 
 log = logging.getLogger(__name__)
+
+
+import os as _os
+
+def _cors_origins() -> list[str]:
+    """
+    Return the list of allowed CORS origins (C03).
+
+    Defaults to common local dev ports.  Override by setting the
+    BLIX_CORS_ORIGINS environment variable to a comma-separated list
+    of origins, e.g.::
+
+        BLIX_CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+    """
+    env = _os.environ.get("BLIX_CORS_ORIGINS", "")
+    if env.strip():
+        return [o.strip() for o in env.split(",") if o.strip()]
+    return [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8080",
+    ]
 
 
 def create_app(memory_dir: Path | None = None) -> FastAPI:
@@ -77,12 +103,63 @@ def create_app(memory_dir: Path | None = None) -> FastAPI:
     # CORS (permissive for local dev; tighten for production)
     # ----------------------------------------------------------------
 
+    # C07: Enforce a maximum request body size to prevent memory exhaustion.
+    # Starlette/FastAPI have no built-in body limit; a client can POST
+    # an arbitrarily large JSON body and fill server memory.
+    # 4 MB covers the largest legitimate payload (long conversation history).
+    # File uploads are handled separately with their own 10 MB limit (C08).
+    _MAX_BODY_BYTES = int(_os.environ.get("BLIX_MAX_BODY_BYTES", 4 * 1024 * 1024))
+
+    class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            content_length = request.headers.get("content-length")
+            if content_length is not None:
+                try:
+                    cl_int = int(content_length)
+                except ValueError:
+                    # Malformed Content-Length header — reject to be safe
+                    from starlette.responses import JSONResponse
+                    return JSONResponse(
+                        status_code=400,
+                        content={"detail": f"Invalid Content-Length header: {content_length!r}"},
+                    )
+                if cl_int > _MAX_BODY_BYTES:
+                    from starlette.responses import JSONResponse
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": (
+                            f"Request body too large: {cl_int:,} bytes. "
+                            f"Maximum is {_MAX_BODY_BYTES:,} bytes."
+                        )},
+                    )
+            return await call_next(request)(request)
+
+    application.add_middleware(_BodySizeLimitMiddleware)
+
+    # C12: Attach a unique X-Request-ID to every request so errors can be
+    # correlated across log lines. Accepts a client-supplied ID if present,
+    # otherwise generates one.  The ID is echoed back in the response header.
+    import uuid as _uuid
+
+    class _RequestIDMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            req_id = request.headers.get("x-request-id") or str(_uuid.uuid4())
+            response = await call_next(request)
+            response.headers["X-Request-ID"] = req_id
+            return response
+
+    application.add_middleware(_RequestIDMiddleware)
+
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        # C03: allow_origins=["*"] + allow_credentials=True is rejected by
+        # browsers (CORS spec forbids wildcard + credentials). Restrict to
+        # known local dev origins; override via BLIX_CORS_ORIGINS env var
+        # for non-default setups.
+        allow_origins=_cors_origins(),
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
     )
 
     # ----------------------------------------------------------------

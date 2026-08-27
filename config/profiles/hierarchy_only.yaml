@@ -1,0 +1,32 @@
+# Ablation: Hierarchy only (no graph edges, no ADMA policy learning)
+#
+# Tests whether the hierarchical memory compression tiers (Raw → Session →
+# Project → Lifetime) alone outperform flat RAG, independent of graph
+# reasoning or adaptive policy selection.
+#
+# Expected rank: Medium — hierarchy compression improves context quality
+# but without graph edges the system cannot reason over relationships.
+#
+# Usage: --profiles hierarchy_only
+
+features:
+  hybrid_retrieval: true
+  adaptive_policy: false
+  graph_reasoning: false
+  temporal: true
+  hierarchy: true
+
+# HybridWeights — boost hierarchy and recency; zero out graph edges.
+# Field names must match HybridWeights dataclass in hybrid_retriever.py.
+retrieval_weights:
+  semantic: 0.35
+  vector: 0.25
+  graph_distance: 0.00      # no graph edges
+  importance: 0.15
+  confidence: 0.10
+  recency: 0.08
+  hierarchy: 0.07           # boosted: hierarchy is the key feature here
+  context_similarity: 0.00
+  attention: 0.00
+  belief_confidence: 0.00
+  planning_relevance: 0.00

@@ -80,9 +80,12 @@ class TestNoLostUpdates:
         def update(reward_val: float) -> None:
             try:
                 barrier.wait()  # start simultaneously
-                policy = store.get(p.policy_id)
-                policy.update(reward_val, threshold=0.5)
-                store.save(policy)
+                # Use update_atomic() — the correct API for concurrent RMW (C01).
+                # Bare get()+save() is not atomic even with _lock on get().
+                store.update_atomic(
+                    p.policy_id,
+                    lambda pol: (pol.update(reward_val, threshold=0.5), pol)[1],
+                )
             except Exception as exc:
                 errors.append(exc)
 

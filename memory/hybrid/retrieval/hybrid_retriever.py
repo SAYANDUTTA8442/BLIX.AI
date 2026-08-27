@@ -25,7 +25,7 @@ from memory.hybrid.vector.embedding_manager import EmbeddingManager
 def _default_retrieval_weights():
     try:
         from config.settings import hgshm_settings
-        return hgshm_settings.retrieval.weights.to_dict()
+        return hgshm_settings.retrieval.weights.to_normalised_dict()  # A23: normalised
     except ImportError:
         return {}  # config module absent — use empty dict (HybridWeights defaults apply)
     except Exception as exc:

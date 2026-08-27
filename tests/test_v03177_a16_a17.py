@@ -13,11 +13,14 @@ Regression tests for:
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 import uuid
 from dataclasses import fields
 from datetime import datetime, timezone
 
 import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -110,7 +113,7 @@ class TestA16PrintStatements:
         """config/settings.py must have no runtime print() outside docstrings."""
         from pathlib import Path
         path = next(
-            p for p in Path('/home/claude/blix_v03/config').rglob('settings.py')
+            p for p in (PROJECT_ROOT / 'config').rglob('settings.py')
         )
         src = path.read_text()
         # Strip docstrings, then check
@@ -131,7 +134,7 @@ class TestA16PrintStatements:
         """memory/hybrid/hgshm.py must have no runtime print() outside docstrings."""
         from pathlib import Path
         import ast
-        path = Path('/home/claude/blix_v03/memory/hybrid/hgshm.py')
+        path = PROJECT_ROOT / 'memory' / 'hybrid' / 'hgshm.py'
         src = path.read_text()
         tree = ast.parse(src)
         for node in ast.walk(tree):

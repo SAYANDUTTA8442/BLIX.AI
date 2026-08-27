@@ -82,6 +82,16 @@ class GlobalWorkspace:
         ``WorkspaceMemory`` — holds current workspace contents.
     broadcast_bus:
         ``BroadcastBus`` — notifies subsystems when something enters.
+
+    Multi-tenancy / isolation (B11)
+    --------------------------------
+    ``GlobalWorkspace`` has **no class-level or module-level shared state**.
+    Every instance holds its own ``_attention``, ``_memory``, ``_broadcast``,
+    ``_pending``, and ``_cycle_count`` attributes.  Isolation between users
+    or sessions is achieved at the *instantiation* level: each session
+    (``AgentContext``) creates its own ``GlobalWorkspace`` with its own
+    injected ``WorkspaceMemory`` and ``AttentionManager``.  No additional
+    scoping inside this class is required.
     """
 
     def __init__(

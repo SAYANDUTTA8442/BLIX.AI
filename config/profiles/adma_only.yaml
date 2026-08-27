@@ -1,0 +1,39 @@
+# Ablation: ADMA policy learning only (flat memory, no graph, no hierarchy)
+#
+# Tests whether adaptive policy selection (Thompson-sampling MAB over retrieval
+# weight arms) alone provides value over static retrieval, with all structural
+# memory features disabled. The system learns which retrieval strategy works
+# best for each context type, but operates on flat unstructured memory.
+#
+# Expected rank: Medium — ADMA adapts retrieval strategy but without
+# structural memory (graph, hierarchy) the improvement ceiling is lower.
+#
+# Usage: --profiles adma_only
+
+features:
+  hybrid_retrieval: true
+  adaptive_policy: true      # ADMA policy learning is the key feature
+  graph_reasoning: false
+  temporal: false
+  hierarchy: false
+
+# HybridWeights — uniform semantic baseline; ADMA will learn to adjust.
+# These are the starting weights; the policy learner updates them per arm.
+retrieval_weights:
+  semantic: 0.50
+  vector: 0.40
+  graph_distance: 0.00
+  importance: 0.10
+  confidence: 0.00
+  recency: 0.00
+  hierarchy: 0.00
+  context_similarity: 0.00
+  attention: 0.00
+  belief_confidence: 0.00
+  planning_relevance: 0.00
+
+# ADMA settings (matches ADMASettings / PolicyLearner defaults)
+adma:
+  decay_factor: 0.995
+  reward_threshold: 0.5
+  convergence_tolerance: 0.02

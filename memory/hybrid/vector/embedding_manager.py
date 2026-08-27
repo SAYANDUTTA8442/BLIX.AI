@@ -218,3 +218,20 @@ class EmbeddingManager:
     @property
     def cache_size(self) -> int:
         return len(self._cache)
+
+    def close(self) -> None:
+        """
+        Release the embedding cache (A24).
+
+        Clears the in-process LRU cache so numpy arrays can be GC'd after
+        the parent HGSHM connection is closed.  Safe to call multiple times.
+        """
+        self._cache.clear()
+        log.debug("EmbeddingManager: cache cleared (close called)")
+
+    # ── Context manager ──────────────────────────────────────────────
+    def __enter__(self) -> "EmbeddingManager":
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.close()

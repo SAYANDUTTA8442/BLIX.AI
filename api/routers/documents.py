@@ -44,8 +44,15 @@ async def upload_document(
         )
 
     # Save to a temp file (DocumentProcessor expects a Path)
+    # C08: guard against memory exhaustion from oversized uploads
+    _MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+    content = await file.read()
+    if len(content) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large: {len(content):,} bytes. Maximum is {_MAX_UPLOAD_BYTES:,} bytes (10 MB).",
+        )
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        content = await file.read()
         tmp.write(content)
         tmp_path = Path(tmp.name)
 

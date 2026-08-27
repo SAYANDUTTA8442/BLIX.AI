@@ -161,6 +161,15 @@ class PromptCompilerSettings(BaseModel):
         gt=0,
         description="Maximum memory nodes to include in a compiled prompt.",
     )
+    max_system_instructions_chars: int = Field(
+        default=8000,
+        gt=0,
+        description=(
+            "Hard character limit for assembled system_instructions. "
+            "Prevents OOM/context-window overrun when many policies fire. "
+            "Logged at DEBUG when truncation occurs (A22)."
+        ),
+    )
 
 
 class ADMASettings(BaseModel):
@@ -226,7 +235,8 @@ class HybridWeightsSettings(BaseModel):
             raise ValueError("HybridWeightsSettings: all weights are zero — at least one must be positive.")
         return self
 
-    def to_dict(self) -> dict[str, float]:
+    def to_raw_dict(self) -> dict[str, float]:
+        """Return raw (un-normalised) weight values as a dict."""
         return {
             "semantic": self.semantic, "vector": self.vector,
             "graph_distance": self.graph_distance, "importance": self.importance,
@@ -235,6 +245,28 @@ class HybridWeightsSettings(BaseModel):
             "attention": self.attention, "belief_confidence": self.belief_confidence,
             "planning_relevance": self.planning_relevance,
         }
+
+    def to_normalised_dict(self) -> dict[str, float]:
+        """Return weights normalised to sum to 1.0 (A23).
+
+        Callers that bypass HybridRetriever.HybridWeights.normalised() must
+        use this method to ensure weights are valid input for the retriever.
+        """
+        raw = self.to_raw_dict()
+        total = sum(raw.values())
+        if total <= 0:
+            raise ValueError(
+                "HybridWeightsSettings: cannot normalise — all weights are zero"
+            )
+        return {k: v / total for k, v in raw.items()}
+
+    def to_dict(self) -> dict[str, float]:
+        """Return normalised weights (A23: was raw, now normalised for safety).
+
+        Deprecated alias for :meth:`to_normalised_dict`.
+        Use ``to_raw_dict()`` explicitly if you need raw values.
+        """
+        return self.to_normalised_dict()
 
 
 class RetrievalSettings(BaseModel):
@@ -336,16 +368,74 @@ class DatabaseFilenameSettings(BaseModel):
         return v
 
 
+class ContextBuilderSettings(BaseModel):
+    """
+    Tunable limits for the ContextBuilder 11-step pipeline (A30).
+
+    Before this class, every limit inside ContextBuilder.build() was
+    hardcoded, making the context assembly pipeline opaque and untunable.
+    These fields mirror the hardcoded constants 1-to-1 so existing
+    behaviour is preserved at the defaults.
+    """
+
+    max_gap_nodes: int = Field(
+        default=5,
+        ge=0,
+        description="Maximum knowledge-gap nodes included in a context.",
+    )
+    max_neighbourhood_seeds: int = Field(
+        default=3,
+        ge=0,
+        description="Number of primary-memory seeds used to build the graph neighbourhood.",
+    )
+    max_neighbourhood_edges: int = Field(
+        default=50,
+        ge=0,
+        description="Maximum edges returned in the graph neighbourhood.",
+    )
+    max_expansion_seeds: int = Field(
+        default=3,
+        ge=0,
+        description="Number of seed nodes used for supporting-context graph expansion.",
+    )
+    max_causal_seeds: int = Field(
+        default=3,
+        ge=0,
+        description="Number of seed nodes from which causal chains are traced.",
+    )
+    max_causal_chains: int = Field(
+        default=3,
+        ge=0,
+        description="Maximum number of causal chains extracted per build() call.",
+    )
+    max_causal_depth: int = Field(
+        default=3,
+        ge=1,
+        description="Maximum depth of each causal chain (DFS steps).",
+    )
+    graph_score_decay: float = Field(
+        default=0.7,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Exponential decay applied to graph-expansion scores per BFS depth level. "
+            "score = importance * decay ** depth_reached."
+        ),
+    )
+
+
 class HGSHMSettings(BaseModel):
     """
     Hybrid Graph-Based Semantic Hierarchical Memory — top-level configuration.
     """
 
-    embedding:     EmbeddingSettings          = Field(default_factory=EmbeddingSettings)
-    retrieval:     RetrievalSettings          = Field(default_factory=RetrievalSettings)
-    consolidation: ConsolidationSettings      = Field(default_factory=ConsolidationSettings)
-    hierarchy:     HierarchySettings          = Field(default_factory=HierarchySettings)
-    database:      DatabaseFilenameSettings   = Field(default_factory=DatabaseFilenameSettings)
+    embedding:       EmbeddingSettings          = Field(default_factory=EmbeddingSettings)
+    retrieval:       RetrievalSettings          = Field(default_factory=RetrievalSettings)
+    consolidation:   ConsolidationSettings      = Field(default_factory=ConsolidationSettings)
+    hierarchy:       HierarchySettings          = Field(default_factory=HierarchySettings)
+    database:        DatabaseFilenameSettings   = Field(default_factory=DatabaseFilenameSettings)
+    context_builder: ContextBuilderSettings     = Field(default_factory=ContextBuilderSettings,
+                                                        description="ContextBuilder pipeline limits (A30).")
 
 
 # ── Feature flags ────────────────────────────────────────────────────
